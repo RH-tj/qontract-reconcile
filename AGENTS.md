@@ -229,6 +229,14 @@ Do NOT create a barrel re-export `models.py` — import directly from `domain.py
 
 ## Testing Guidelines
 
+- Before changing a shared helper's behavior, enumerate all call sites and document
+  each consumer contract. Keep consumer-specific policy in a dedicated API rather
+  than widening a generic helper, and add caller-level regressions that exercise the
+  real helper for both the intended behavior and unaffected consumers.
+- For destructive safety checks, distinguish atomic guarantees from snapshot-based
+  decisions. Document any check/use race, scope claims to observed state unless an
+  admission or coordination mechanism closes the race, and cover every known API
+  reference form or explicitly narrow the contract.
 - Unit tests use pytest functions (no classes)
 - Use `@pytest.fixture` for reusable test data
 - Use `@pytest.mark.parametrize` for multiple inputs

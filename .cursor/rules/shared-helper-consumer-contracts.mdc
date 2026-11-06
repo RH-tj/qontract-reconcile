@@ -1,0 +1,28 @@
+---
+description: Prevent consumer-specific policy from leaking through shared helpers
+alwaysApply: true
+---
+
+# Shared helper consumer contracts
+
+- Before changing the output or supported inputs of a shared helper, enumerate every
+  call site and state the contract each consumer relies on.
+- Do not widen a generic helper to implement one consumer's policy when another
+  consumer has different validity rules. Introduce a policy-specific helper or a
+  typed result with explicit consumer selection instead.
+- Add caller-level regressions for every distinct contract. At least one test per
+  consumer must exercise the real shared helper; mocking the helper only tests the
+  caller's assumptions.
+- For destructive safety gates, prove both the protected action and unaffected
+  preflight/dry-run paths. Include a realistic fixture for tolerated external state,
+  such as an image pull Secret that is absent from a validation cluster.
+- State whether a safety decision is atomic or snapshot-based. For a snapshot check,
+  document the check/use race and scope every guarantee to the state observed by the
+  final check; require admission or other coordination before claiming continuous
+  protection against concurrent actors.
+- Enumerate known reference forms from the authoritative API. Either support each
+  form, including CSI `nodePublishSecretRef`, or make the exclusion explicit in the
+  feature contract, tests, and operational claims.
+- Treat a green focused integration test as insufficient when shared framework code
+  changed. Retain the caller inventory, contract matrix, and cross-consumer test
+  results as review evidence.

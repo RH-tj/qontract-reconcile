@@ -1204,6 +1204,376 @@ def test_validate_planned_data_caches_namespace_checks(
     assert oc_cs1.get.call_count == 2
 
 
+@pytest.mark.parametrize(
+    "pod_spec",
+    [
+        pytest.param(
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "volumes": [
+                    {
+                        "name": "projected-secret",
+                        "projected": {"sources": [{"secret": {"name": "unmanaged"}}]},
+                    }
+                ],
+            },
+            id="projected-secret",
+        ),
+        pytest.param(
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "volumes": [
+                    {
+                        "name": "projected-configmap",
+                        "projected": {
+                            "sources": [{"configMap": {"name": "unmanaged"}}]
+                        },
+                    }
+                ],
+            },
+            id="projected-configmap",
+        ),
+        *[
+            pytest.param(
+                {
+                    "containers": [{"name": "app", "image": "image"}],
+                    "volumes": [{"name": plugin, plugin: reference}],
+                },
+                id=f"in-tree-{plugin}",
+            )
+            for plugin, reference in [
+                ("azureFile", {"secretName": "unmanaged"}),
+                ("cephfs", {"secretRef": {"name": "unmanaged"}}),
+                ("cinder", {"secretRef": {"name": "unmanaged"}}),
+                ("flexVolume", {"secretRef": {"name": "unmanaged"}}),
+                ("iscsi", {"secretRef": {"name": "unmanaged"}}),
+                ("rbd", {"secretRef": {"name": "unmanaged"}}),
+                ("scaleIO", {"secretRef": {"name": "unmanaged"}}),
+                ("storageos", {"secretRef": {"name": "unmanaged"}}),
+            ]
+        ],
+        pytest.param(
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "ephemeralContainers": [
+                    {
+                        "name": "debugger",
+                        "envFrom": [{"secretRef": {"name": "unmanaged"}}],
+                    }
+                ],
+            },
+            id="ephemeral-secret-env-from",
+        ),
+        pytest.param(
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "ephemeralContainers": [
+                    {
+                        "name": "debugger",
+                        "env": [
+                            {
+                                "name": "VALUE",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "name": "unmanaged",
+                                        "key": "value",
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            id="ephemeral-secret-env",
+        ),
+        pytest.param(
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "ephemeralContainers": [
+                    {
+                        "name": "debugger",
+                        "envFrom": [{"configMapRef": {"name": "unmanaged"}}],
+                    }
+                ],
+            },
+            id="ephemeral-configmap-env-from",
+        ),
+        pytest.param(
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "ephemeralContainers": [
+                    {
+                        "name": "debugger",
+                        "env": [
+                            {
+                                "name": "VALUE",
+                                "valueFrom": {
+                                    "configMapKeyRef": {
+                                        "name": "unmanaged",
+                                        "key": "value",
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            id="ephemeral-configmap-env",
+        ),
+        pytest.param(
+            {
+                "containers": [{"name": "thanos", "image": "image"}],
+                "imagePullSecrets": [{"name": "quayio"}],
+            },
+            id="image-pull-secret-pr-5912",
+        ),
+    ],
+)
+def test_validate_planned_data_ignores_non_preflight_reference_forms(
+    resource_inventory: resource.ResourceInventory,
+    oc_map: oc.OC_Map,
+    oc_cs1: MagicMock,
+    pod_spec: dict[str, Any],
+) -> None:
+    """Protect preflight from every shared-parser expansion reverted by PR 5912."""
+    resource_inventory.initialize_resource_type("cs1", "ns1", "Deployment")
+    resource_inventory.add_desired(
+        "cs1",
+        "ns1",
+        "Deployment",
+        "thanos-querier",
+        build_openshift_resource(
+            kind="Deployment",
+            api_version="apps/v1",
+            name="thanos-querier",
+            extra_body={
+                "spec": {
+                    "template": {
+                        "spec": pod_spec,
+                    }
+                }
+            },
+        ),
+    )
+    oc_cs1.get_resources_used_in_pod_spec.side_effect = (
+        oc.OCCli.get_resources_used_in_pod_spec
+    )
+    oc_cs1.project_exists.return_value = True
+    oc_cs1.get.return_value = {}
+
+    sut.validate_planned_data(resource_inventory, oc_map)
+
+    assert not resource_inventory.has_error_registered()
+    assert oc_cs1.get_resources_used_in_pod_spec.call_count == 2
+    oc_cs1.project_exists.assert_not_called()
+    oc_cs1.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("used_kind", "pod_spec"),
+    [
+        pytest.param(
+            "Secret",
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "volumes": [{"name": "data", "secret": {"secretName": "missing"}}],
+            },
+            id="secret-volume",
+        ),
+        pytest.param(
+            "ConfigMap",
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "volumes": [{"name": "data", "configMap": {"name": "missing"}}],
+            },
+            id="configmap-volume",
+        ),
+        pytest.param(
+            "Secret",
+            {
+                "containers": [
+                    {
+                        "name": "app",
+                        "image": "image",
+                        "envFrom": [{"secretRef": {"name": "missing"}}],
+                    }
+                ]
+            },
+            id="secret-env-from",
+        ),
+        pytest.param(
+            "ConfigMap",
+            {
+                "containers": [
+                    {
+                        "name": "app",
+                        "image": "image",
+                        "envFrom": [{"configMapRef": {"name": "missing"}}],
+                    }
+                ]
+            },
+            id="configmap-env-from",
+        ),
+        pytest.param(
+            "Secret",
+            {
+                "containers": [
+                    {
+                        "name": "app",
+                        "image": "image",
+                        "env": [
+                            {
+                                "name": "VALUE",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "name": "missing",
+                                        "key": "value",
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+            id="secret-env",
+        ),
+        pytest.param(
+            "ConfigMap",
+            {
+                "containers": [
+                    {
+                        "name": "app",
+                        "image": "image",
+                        "env": [
+                            {
+                                "name": "VALUE",
+                                "valueFrom": {
+                                    "configMapKeyRef": {
+                                        "name": "missing",
+                                        "key": "value",
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+            id="configmap-env",
+        ),
+        pytest.param(
+            "Secret",
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "initContainers": [
+                    {
+                        "name": "init",
+                        "image": "image",
+                        "envFrom": [{"secretRef": {"name": "missing"}}],
+                    }
+                ],
+            },
+            id="init-secret-env-from",
+        ),
+        pytest.param(
+            "ConfigMap",
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "initContainers": [
+                    {
+                        "name": "init",
+                        "image": "image",
+                        "envFrom": [{"configMapRef": {"name": "missing"}}],
+                    }
+                ],
+            },
+            id="init-configmap-env-from",
+        ),
+        pytest.param(
+            "Secret",
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "initContainers": [
+                    {
+                        "name": "init",
+                        "image": "image",
+                        "env": [
+                            {
+                                "name": "VALUE",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "name": "missing",
+                                        "key": "value",
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            id="init-secret-env",
+        ),
+        pytest.param(
+            "ConfigMap",
+            {
+                "containers": [{"name": "app", "image": "image"}],
+                "initContainers": [
+                    {
+                        "name": "init",
+                        "image": "image",
+                        "env": [
+                            {
+                                "name": "VALUE",
+                                "valueFrom": {
+                                    "configMapKeyRef": {
+                                        "name": "missing",
+                                        "key": "value",
+                                    }
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            id="init-configmap-env",
+        ),
+    ],
+)
+def test_validate_planned_data_preserves_preflight_reference_forms(
+    resource_inventory: resource.ResourceInventory,
+    oc_map: oc.OC_Map,
+    oc_cs1: MagicMock,
+    used_kind: str,
+    pod_spec: dict[str, Any],
+) -> None:
+    """Prove the real parser still returns every supported preflight reference."""
+    resource_inventory.initialize_resource_type("cs1", "ns1", "Deployment")
+    resource_inventory.add_desired(
+        "cs1",
+        "ns1",
+        "Deployment",
+        "consumer",
+        build_openshift_resource(
+            kind="Deployment",
+            api_version="apps/v1",
+            name="consumer",
+            extra_body={"spec": {"template": {"spec": pod_spec}}},
+        ),
+    )
+    oc_cs1.get_resources_used_in_pod_spec.side_effect = (
+        oc.OCCli.get_resources_used_in_pod_spec
+    )
+    oc_cs1.project_exists.return_value = True
+    oc_cs1.get.return_value = {}
+
+    sut.validate_planned_data(resource_inventory, oc_map)
+
+    assert resource_inventory.has_error_registered()
+    oc_cs1.project_exists.assert_called_once_with("ns1")
+    oc_cs1.get.assert_called_once_with(
+        "ns1", used_kind, name="missing", allow_not_found=True
+    )
+
+
 @pytest.fixture
 def diff_result() -> DiffResult:
     r1 = build_openshift_resource_1()
